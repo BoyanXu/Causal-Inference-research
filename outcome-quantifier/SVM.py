@@ -12,11 +12,12 @@ from nltk.corpus import stopwords
 from nltk.tokenize import word_tokenize
 from nltk import ngrams## sklearn
 
+## sklearn
 import sklearn.svm as svm
 from sklearn.pipeline import Pipeline
 from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.metrics import f1_score
-from sklearn.model_selection import train_test_split
+from sklearn.metrics import f1_score, precision_score, recall_score, accuracy_score
+from sklearn.model_selection import train_test_split, cross_val_score
 
 ## Scipy
 from scipy.sparse import csr_matrix
@@ -51,18 +52,21 @@ positive_file_names = ['anxiety', 'depression', 'psychosis', 'stress', 'SuicideW
 negative_file_names = ['ask_reddit']
 file_extension = '.txt'
 
+top_grams = pd.DataFrame()
+metric = pd.DataFrame(index=["Precision","Recall","Accuracy", "F1"])
+
 for positive_file_name in positive_file_names:
     print("{0} pipeline start".format(positive_file_name))
     # Load positive dataframe
-    pos_df = pd.read_csv(filepath_or_buffer=data_folder + positive_file_names[0] + file_extension, sep='❖', header =None, names =['text'])
+    pos_df = pd.read_csv(filepath_or_buffer=data_folder + positive_file_names[0] + file_extension, sep='❖', quotechar='⩐', header =None, names =['text'], error_bad_lines=False)
     pos_df['source'] = positive_file_name
     pos_df['label'] = 1
 
-    neg_df = pd.read_csv(filepath_or_buffer=data_folder + negative_file_names[0] + file_extension, sep='❖', header =None, names =['text'])
+    neg_df = pd.read_csv(filepath_or_buffer=data_folder + negative_file_names[0] + file_extension, sep='❖', quotechar='⩐', header =None, names =['text'], error_bad_lines=False)
     ## Balance the positive and negative samples
-    neg_df = neg_df.sample(n=pos_df.shape[0], random_state=1, ignore_index=True)
+    neg_df = neg_df.sample(n=pos_df.shape[0], random_state=1)
     neg_df['source'] = negative_file_names[0]
-    neg_df['label'] = -1
+    neg_df['label'] = 0
 
     df = pd.concat([pos_df, neg_df], ignore_index=True)
 
@@ -91,12 +95,12 @@ for positive_file_name in positive_file_names:
         coefs.toarray().tolist()[0]
     else:
         coefs.tolist()
-     
     
-
     ## Build features for clean_text   
     feature_names = tf_idf.named_steps["tfidf"].get_feature_names()
     coefs_and_features = list(zip(coefs[0], feature_names))
+    top_grams[positive_file_name] = sorted(coefs_and_features, key=lambda x: x[0], reverse=True)[:30]
+
     features = [x[1] for x in sorted(coefs_and_features, key=lambda x: x[0], reverse=True)[:5000]]
     for feature in features:
         df[feature] = df.clean_text.str.contains(feature).map(int)
@@ -106,16 +110,32 @@ for positive_file_name in positive_file_names:
     Y = df.label
     X_train,X_test,Y_train,Y_test = train_test_split(X, Y, random_state=20)
 
+
     ## Train the model
     clf = svm.LinearSVC()
+    
+    cv_metrics = [cross_val_score(clf, X, Y, cv=5, scoring='precision').mean(),
+              cross_val_score(clf, X, Y, cv=5, scoring='recall').mean(),
+              cross_val_score(clf, X, Y, cv=5, scoring='accuracy').mean(),
+              cross_val_score(clf, X, Y, cv=5, scoring='f1').mean()]
+    metric[positive_file_names[0] + "_CV"] = cv_metrics
+    
     clf.fit(X_train, Y_train)
     
+    test_metrics = [precision_score(Y_test, clf.predict(X_test)),
+                recall_score(Y_test, clf.predict(X_test)),
+                accuracy_score(Y_test, clf.predict(X_test)),
+                f1_score(Y_test, clf.predict(X_test))]
+    metric[positive_file_names[0] + "_test"] = cv_metrics
+    
     ## Confidence measure
-    print("SVM claasifier F1 score: {0}".format(f1_score(Y_test, clf.predict(X_test))))
+    print("SVM claasifier 5-fold F1 score: {0}".format(f1_score(Y_test, clf.predict(X_test))))
+    
     
     ## Save the model
     with open(positive_file_name + '.sav', 'wb') as sav:
         pickle.dump(clf, sav)
     
     print("{0} pipeline end".format(positive_file_name))
-
+top_grams.to_csv("top_grams.csv")
+metric.to_csv("metric.csv")
